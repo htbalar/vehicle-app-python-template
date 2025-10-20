@@ -1,1 +1,10 @@
-{}
+{
+    "python.analysis.extraPaths": [
+        "./proto",
+        "./src/vehicle_model",
+        "./app/src",
+        "./app/src/safety-monitor-kph/src",
+        "./app/src/safety-monitor-kph/src/safety",
+        "./app/src"
+    ]
+}

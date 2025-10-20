@@ -19,6 +19,9 @@ import json
 import logging
 import signal
 
+from safety.config import get_config
+from safety.monitor import SafetyMonitor
+
 from vehicle import Vehicle, vehicle  # type: ignore
 from velocitas_sdk.util.log import (  # type: ignore
     get_opentelemetry_log_factory,

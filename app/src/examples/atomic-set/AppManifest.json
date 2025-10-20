@@ -1,0 +1,35 @@
+{
+    "manifestVersion": "v3",
+    "name": "atomic-set",
+    "interfaces": [
+        {
+            "type": "vehicle-signal-interface",
+            "config": {
+                "src": "https://github.com/COVESA/vehicle_signal_specification/releases/download/v3.0/vss_rel_3.0.json",
+                "datapoints": {
+                    "required": [
+                        {
+                            "path": "Vehicle.Cabin.Seat.Row1.Pos1.Position",
+                            "access": "write"
+                        },
+                        {
+                            "path": "Vehicle.Cabin.Seat.Row1.Pos2.Position",
+                            "access": "write"
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "type": "pubsub",
+            "config": {
+                "reads": [
+                    "vehicleapp/setValue/request"
+                ],
+                "writes": [
+                    "vehicleapp/setValue/response",
+                ]
+            }
+        }
+    ]
+}
