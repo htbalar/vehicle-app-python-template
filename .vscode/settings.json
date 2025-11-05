@@ -6,6 +6,7 @@
         "./app/src/safety-monitor-kph/src",
         "./app/src/safety-monitor-kph/src/safety",
         "./app/src",
+        "./app/src",
         "./app/src"
     ]
 }

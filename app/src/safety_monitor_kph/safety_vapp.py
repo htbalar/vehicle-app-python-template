@@ -61,18 +61,24 @@ class SafetyApp(VehicleApp):
         self.topic_door = os.getenv("TOPIC_DOOR", "ext/safety/door")
 
         # Runtime state
-        self.speed_kph: float = 0.0                         
-        self.doors_open: Dict[str, bool] = {                
+        self.speed_kph: float = 0.0
+        self.doors_open: Dict[str, bool] = {
             "frontLeft": False, "frontRight": False,
             "rearLeft": False, "rearRight": False,
         }
-        self.belts_fastened: Dict[str, bool] = {            
+        self.belts_fastened: Dict[str, bool] = {
             "row1_pos1": True, "row1_pos2": True,
         }
 
         # Debounced states
         self._sb_state = _DebouncedState()
         self._door_state = _DebouncedState()
+
+        # NEW: Track last published aggregates so we can republish updates while active
+        self._last_open_doors: set[str] = set()
+        self._last_unfastened: set[str] = set()
+        self._last_moving: bool = False
+
 
     # -------------------- lifecycle --------------------
     async def on_start(self):
@@ -132,27 +138,50 @@ class SafetyApp(VehicleApp):
         sb_change = _tick(self._sb_state, moving and bool(unfastened), self.debounce_count)
         dr_change = _tick(self._door_state, moving and bool(open_doors), self.debounce_count)
 
-        if sb_change:
+        # ---------- Seatbelt ----------
+        seatbelt_should_update = False
+        if sb_change is not None:
+            seatbelt_should_update = True
+        elif self._sb_state.active and (
+            set(unfastened) != self._last_unfastened or moving != self._last_moving
+        ):
+            seatbelt_should_update = True
+
+        if seatbelt_should_update:
             payload = {
                 "moving": moving,
                 "anyUnfastened": bool(unfastened),
                 "unfastened": unfastened,
                 "thresholdKph": self.threshold_kph,
-                "state": "active" if sb_change == "activated" else "cleared",
+                "state": "active" if self._sb_state.active else "cleared",
             }
             await self.publish_event(self.topic_seatbelt, json.dumps(payload))
             logger.info("Seatbelt %s %s", payload["state"], payload)
+            self._last_unfastened = set(unfastened)
 
-        if dr_change:
+        # ---------- Doors ----------
+        door_should_update = False
+        if dr_change is not None:
+            door_should_update = True
+        elif self._door_state.active and (
+            set(open_doors) != self._last_open_doors or moving != self._last_moving
+        ):
+            door_should_update = True
+
+        if door_should_update:
             payload = {
                 "moving": moving,
                 "anyOpen": bool(open_doors),
                 "open": open_doors,
                 "thresholdKph": self.threshold_kph,
-                "state": "active" if dr_change == "activated" else "cleared",
+                "state": "active" if self._door_state.active else "cleared",
             }
             await self.publish_event(self.topic_door, json.dumps(payload))
             logger.info("Door %s %s", payload["state"], payload)
+            self._last_open_doors = set(open_doors)
+
+        self._last_moving = moving
+
 
 
 def _parse_bool(s: str) -> bool:
