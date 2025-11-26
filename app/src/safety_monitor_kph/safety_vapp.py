@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from vehicle import Vehicle  # type: ignore
 
@@ -59,6 +59,7 @@ class SafetyApp(VehicleApp):
         self.debounce_count: int = int(os.getenv("SAFETY_DEBOUNCE_COUNT", "1"))
         self.topic_seatbelt = os.getenv("TOPIC_SEATBELT", "ext/safety/seatbelt")
         self.topic_door = os.getenv("TOPIC_DOOR", "ext/safety/door")
+        self.topic_speed = os.getenv("TOPIC_SPEED", "ext/safety/speed")
 
         # Runtime state
         self.speed_kph: float = 0.0
@@ -96,6 +97,15 @@ class SafetyApp(VehicleApp):
 
     async def on_speed_changed(self, data: DataPointReply):
         self.speed_kph = data.get(self.Vehicle.Speed).value
+        try:
+            speed_val = float(self.speed_kph or 0.0)
+        except Exception:
+            speed_val = 0.0
+
+        await self.publish_event(
+            self.topic_speed,
+            json.dumps({"speedKph": round(speed_val, 1)})
+        )
         await self._evaluate_and_publish()
 
     # -------------------- MQTT inputs (same CLI style you used) --------------------
@@ -150,6 +160,7 @@ class SafetyApp(VehicleApp):
         if seatbelt_should_update:
             payload = {
                 "moving": moving,
+                "speedKph": round(float(self.speed_kph or 0.0), 1),
                 "anyUnfastened": bool(unfastened),
                 "unfastened": unfastened,
                 "thresholdKph": self.threshold_kph,
@@ -171,6 +182,7 @@ class SafetyApp(VehicleApp):
         if door_should_update:
             payload = {
                 "moving": moving,
+                "speedKph": round(float(self.speed_kph or 0.0), 1),
                 "anyOpen": bool(open_doors),
                 "open": open_doors,
                 "thresholdKph": self.threshold_kph,

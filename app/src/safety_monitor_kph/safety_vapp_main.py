@@ -13,7 +13,7 @@ async def _main():
     try:
         app = SafetyApp(Vehicle(instance_name)) 
     except TypeError:
-        app = SafetyApp(Vehicle())              
+        app = SafetyApp(Vehicle())               # type: ignore
     await app.run()
 
 if __name__ == "__main__":
