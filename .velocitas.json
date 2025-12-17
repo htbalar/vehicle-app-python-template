@@ -12,7 +12,6 @@
         "pantaris-integration",
         "github-workflows",
         "github-templates",
-        "devcontainer-setup",
         "vehicle-signal-interface",
         "grpc-interface-support"
     ],

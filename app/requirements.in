@@ -13,3 +13,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 velocitas-sdk==0.15.7
+torch
+torchvision
+opencv-python-headless
+joblib
+scikit-learn
+Pillow

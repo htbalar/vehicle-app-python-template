@@ -6,7 +6,9 @@
 	},
 	"runArgs": [
 		"--init",
-		"--privileged"
+		"--privileged",
+		"--device",
+		"/dev/video0:/dev/video0"
 	],
 	"containerEnv": {
 		"GITHUB_API_TOKEN": "${localEnv:GITHUB_API_TOKEN}",

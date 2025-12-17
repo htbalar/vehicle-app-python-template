@@ -34,6 +34,18 @@ DOOR_UNLOCK_PATTERN = "ext/doors/+/unlock"
 # Child mode specific limits (can be tuned via env later)
 CHILD_MODE_MAX_SPEED_KPH = float(os.getenv("CHILD_MODE_MAX_SPEED_KPH", "30.0"))
 
+try:
+    # Fix import to work when running as a package from app/src
+    from safety_monitor_kph.child_detector import ChildPresenceDetector
+except ImportError as e_main:
+    logger.warning(f"First import attempt failed: {e_main}")
+    try:
+        # Fallback for local execution or if in the same directory
+        from child_detector import ChildPresenceDetector
+    except ImportError as e_fallback:
+        logger.error(f"Failed to import ChildPresenceDetector from fallback: {e_fallback}")
+        ChildPresenceDetector = None
+
 
 class ChildLockController:
     """
@@ -57,7 +69,11 @@ class ChildLockController:
         self.any_door_open: bool = False
         self.any_unfastened: bool = False
 
-    # ------- helpers -------
+        self.any_unfastened: bool = False
+
+    def set_child_mode(self, enabled: bool) -> None:
+        """Public method to set child mode."""
+        self._set_child_mode(enabled)
 
     def _publish_event(self, event: Dict[str, Any]) -> None:
         payload = json.dumps(event)
@@ -243,26 +259,86 @@ class ChildLockController:
                 }
             )
 
+import threading
+import time
+import io
+import cv2
+import numpy as np
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+# ... imports ...
+
+# Global buffer for latest frame
+lock_frame = threading.Lock()
+latest_frame = None
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
+
+class CamHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.endswith('.mjpg'):
+            self.send_response(200)
+            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--jpgboundary')
+            self.end_headers()
+            try:
+                while True:
+                    with lock_frame:
+                        if latest_frame is None:
+                            time.sleep(0.1)
+                            continue
+                        img = latest_frame.copy()
+                    
+                    # Encode to jpeg
+                    ret, jpeg = cv2.imencode('.jpg', img)
+                    if not ret:
+                        continue
+                    
+                    self.wfile.write(b"--jpgboundary\r\n")
+                    self.send_header('Content-type', 'image/jpeg')
+                    self.end_headers()
+                    self.wfile.write(jpeg.tobytes())
+                    self.wfile.write(b"\r\n")
+                    time.sleep(0.05)
+            except Exception:
+                pass
+        else:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b"""<html>
+            <head><title>Child Mode Camera</title></head>
+            <body>
+                <h1>Live Camera Stream</h1>
+                <img src="/cam.mjpg" />
+            </body>
+            </html>""")
+
+def start_server():
+    try:
+        server = ThreadedHTTPServer(('0.0.0.0', 8080), CamHandler)
+        print("Camera Stream available at http://localhost:8080")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start stream server: {e}")
+
 def main() -> None:
     client = mqtt.Client()
     controller = ChildLockController(client)
-
-    def on_connect(client: mqtt.Client, userdata, flags, rc: int) -> None:
+    # ... MQTT callbacks setup (omitted for brevity, assume existing) ...
+    
+    def on_connect(client, userdata, flags, rc):
         print(f"Connected to MQTT with rc = {rc}")
-        logger.info("Connected to MQTT broker %s:%s rc=%s", BROKER_HOST, BROKER_PORT, rc)
-
-        # Subscribe to child mode control, unlock commands, and safety aggregates
         client.subscribe(TOPIC_CHILDLOCK_SET, qos=1)
         client.subscribe(DOOR_UNLOCK_PATTERN, qos=1)
         client.subscribe(TOPIC_SAFETY_DOOR, qos=1)
         client.subscribe(TOPIC_SAFETY_SEATBELT, qos=1)
         client.subscribe(TOPIC_SAFETY_SPEED, qos=1)
 
-
-    def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
+    def on_message(client, userdata, msg):
         topic = msg.topic
         payload = msg.payload.decode(errors="ignore")
-
         if topic == TOPIC_CHILDLOCK_SET:
             controller.handle_childlock_set(payload)
         elif topic == TOPIC_SAFETY_DOOR:
@@ -271,18 +347,88 @@ def main() -> None:
             controller.handle_safety_seatbelt(payload)
         elif topic == TOPIC_SAFETY_SPEED:
             controller.handle_safety_speed(payload)
-        elif topic.startswith("ext/doors/") and topic.endswith("/unlock"):
+        elif "unlock" in topic:
             controller.handle_unlock_request(topic, payload)
-        else:
-            logger.debug("Ignoring message on %s", topic)
-
 
     client.on_connect = on_connect
     client.on_message = on_message
+    client.connect(BROKER_HOST, BROKER_PORT, 60)
+    client.loop_start()
 
-    client.connect(BROKER_HOST, BROKER_PORT, keepalive=60)
-    client.loop_forever()
+    # Detector init
+    detector = None
+    if ChildPresenceDetector:
+        try:
+            detector = ChildPresenceDetector()
+            logger.info("ChildPresenceDetector initialized.")
+        except Exception as e:
+            logger.error(f"Init failed: {e}")
 
+    # Start MJPEG Server
+    t = threading.Thread(target=start_server, daemon=True)
+    t.start()
+
+    # Capture Loop
+    cap = cv2.VideoCapture(0)
+    # Fix for USBIPD / WSL bandwidth issues: Force lower resolution
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)
+    # Force MJPEG format (often helps with USBIP)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    
+    if not cap.isOpened():
+        logger.error("Could not open video device 0")
+    
+    no_child_counter = 0
+    DEBOUNCE_THRESHOLD = 3
+    last_check_time = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(1)
+                continue
+            
+            # --- Draw UI on frame ---
+            status_text = "CHILD MODE: " + ("ON" if controller.child_mode_enabled else "OFF")
+            color = (0, 0, 255) if controller.child_mode_enabled else (0, 255, 0)
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            
+            # Update global buffer
+            with lock_frame:
+                global latest_frame
+                latest_frame = frame
+            
+            # --- Periodic Detection ---
+            now = time.time()
+            if now - last_check_time > 5.0 and detector:
+                last_check_time = now
+                try:
+                    is_child = detector.detect_child(frame)
+                    logger.info(f"Detection Result: {is_child}")
+                    
+                    if is_child:
+                        no_child_counter = 0
+                        if not controller.child_mode_enabled:
+                            logger.info("Child detected! Enabling.")
+                            controller.set_child_mode(True)
+                    else:
+                        if controller.child_mode_enabled:
+                            no_child_counter += 1
+                            if no_child_counter >= DEBOUNCE_THRESHOLD:
+                                logger.info("Disabling Child Mode.")
+                                controller.set_child_mode(False)
+                                no_child_counter = 0
+                except Exception as e:
+                    logger.error(f"Detection error: {e}")
+            
+            time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        client.loop_stop()
+        cap.release()
 
 if __name__ == "__main__":
     main()
